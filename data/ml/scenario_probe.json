@@ -1,0 +1,41 @@
+{
+  "schema_version": "RCA_SCENARIO_PROBE_V1",
+  "results": [
+    {
+      "data_origin": "SYNTHETIC",
+      "scenario_name": "network",
+      "case_id": 15,
+      "expected_family": "CONGESTION_OR_BACKHAUL",
+      "verified": true,
+      "verified_domain": "NETWORK_DOMAIN",
+      "verified_cause": "CONGESTION_OR_BACKHAUL",
+      "confidence": 0.7671,
+      "verification_status": "VERIFIED",
+      "verification_reasons": []
+    },
+    {
+      "data_origin": "SYNTHETIC",
+      "scenario_name": "device-model",
+      "case_id": 16,
+      "expected_family": "DEVICE_MODEL_OR_FIRMWARE",
+      "verified": true,
+      "verified_domain": "DEVICE_DOMAIN",
+      "verified_cause": "DEVICE_MODEL_OR_FIRMWARE",
+      "confidence": 0.882,
+      "verification_status": "VERIFIED",
+      "verification_reasons": []
+    },
+    {
+      "data_origin": "SYNTHETIC",
+      "scenario_name": "coverage",
+      "case_id": 17,
+      "expected_family": "COVERAGE_OR_PROPAGATION",
+      "verified": true,
+      "verified_domain": "PROPAGATION_DOMAIN",
+      "verified_cause": "TERRAIN_PROPAGATION_LIKELY",
+      "confidence": 0.6904,
+      "verification_status": "VERIFIED",
+      "verification_reasons": []
+    }
+  ]
+}
