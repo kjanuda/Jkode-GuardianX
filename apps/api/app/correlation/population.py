@@ -1,4 +1,3 @@
-
 from collections import defaultdict
 from datetime import (
     datetime,
@@ -141,21 +140,28 @@ def detect_device_model_pattern(
     total_affected: int,
 ) -> str:
     if len(cohorts) < 2:
-        return "INSUFFICIENT_MODEL_DIVERSITY"
+        return (
+            "INSUFFICIENT_MODEL_DIVERSITY"
+        )
 
     strong_candidates = []
 
     for cohort in cohorts:
         if (
             cohort["total_devices"] >= 3
-            and cohort["affected_ratio"] >= 0.70
+            and cohort["affected_ratio"]
+            >= 0.50
         ):
             strong_candidates.append(
                 cohort
             )
 
+    # A model-specific pattern should have
+    # exactly one clearly elevated cohort.
     if len(strong_candidates) != 1:
-        return "NO_MODEL_SPECIFIC_PATTERN"
+        return (
+            "NO_MODEL_SPECIFIC_PATTERN"
+        )
 
     candidate = strong_candidates[0]
 
@@ -174,17 +180,41 @@ def detect_device_model_pattern(
     )
 
     if other_total == 0:
-        return "INSUFFICIENT_CONTROL_GROUP"
+        return (
+            "INSUFFICIENT_CONTROL_GROUP"
+        )
 
     other_ratio = (
         other_affected
         / other_total
     )
 
-    if other_ratio <= 0.30:
-        return "DEVICE_MODEL_SPECIFIC_PATTERN"
+    candidate_ratio = float(
+        candidate["affected_ratio"]
+    )
 
-    return "NO_MODEL_SPECIFIC_PATTERN"
+    cohort_gap = (
+        candidate_ratio
+        - other_ratio
+    )
+
+    # Device-model-specific degradation:
+    #
+    # 1. target cohort is meaningfully affected
+    # 2. control cohorts remain relatively healthy
+    # 3. target/control separation is substantial
+    if (
+        candidate_ratio >= 0.50
+        and other_ratio <= 0.30
+        and cohort_gap >= 0.30
+    ):
+        return (
+            "DEVICE_MODEL_SPECIFIC_PATTERN"
+        )
+
+    return (
+        "NO_MODEL_SPECIFIC_PATTERN"
+    )
 
 
 def analyze_cell_population(

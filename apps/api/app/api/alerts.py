@@ -1,5 +1,4 @@
-
-from fastapi import (
+﻿from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
@@ -31,6 +30,16 @@ from app.schemas.dashboard import (
 
 from app.services.alerts import (
     evaluate_alert,
+)
+
+from app.services.alert_lifecycle import (
+    ACTIVE_ALERT_STATUSES,
+    ACKNOWLEDGED,
+    MITIGATING,
+    REOPENED,
+    RESOLVED,
+    InvalidAlertTransition,
+    transition_alert,
 )
 
 
@@ -69,7 +78,7 @@ def get_active_alerts(
             == Device.id,
         )
         .where(
-            Alert.status == "OPEN"
+            Alert.status.in_(ACTIVE_ALERT_STATUSES)
         )
         .order_by(
             Alert.last_seen_at.desc()
@@ -294,3 +303,150 @@ def get_device_alerts(
             query
         ).all()
     )
+
+
+# =====================================================
+# ALERT LIFECYCLE TRANSITIONS
+# =====================================================
+
+def get_alert_or_404(
+    alert_id: int,
+    db: Session,
+) -> Alert:
+    alert = db.get(
+        Alert,
+        alert_id,
+    )
+
+    if alert is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Alert not found",
+        )
+
+    return alert
+
+
+def apply_alert_transition(
+    alert: Alert,
+    target_status: str,
+    db: Session,
+) -> Alert:
+    try:
+        transition_alert(
+            alert,
+            target_status,
+        )
+
+        db.commit()
+
+        db.refresh(
+            alert
+        )
+
+        return alert
+
+    except InvalidAlertTransition as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
+# =====================================================
+# ACKNOWLEDGE ALERT
+# =====================================================
+
+@router.post(
+    "/{alert_id}/acknowledge",
+    response_model=AlertRead,
+)
+def acknowledge_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+):
+    alert = get_alert_or_404(
+        alert_id,
+        db,
+    )
+
+    return apply_alert_transition(
+        alert,
+        ACKNOWLEDGED,
+        db,
+    )
+
+
+# =====================================================
+# START ALERT MITIGATION
+# =====================================================
+
+@router.post(
+    "/{alert_id}/mitigate",
+    response_model=AlertRead,
+)
+def start_alert_mitigation(
+    alert_id: int,
+    db: Session = Depends(get_db),
+):
+    alert = get_alert_or_404(
+        alert_id,
+        db,
+    )
+
+    return apply_alert_transition(
+        alert,
+        MITIGATING,
+        db,
+    )
+
+
+# =====================================================
+# RESOLVE ALERT
+# =====================================================
+
+@router.post(
+    "/{alert_id}/resolve",
+    response_model=AlertRead,
+)
+def resolve_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+):
+    alert = get_alert_or_404(
+        alert_id,
+        db,
+    )
+
+    return apply_alert_transition(
+        alert,
+        RESOLVED,
+        db,
+    )
+
+
+# =====================================================
+# REOPEN ALERT
+# =====================================================
+
+@router.post(
+    "/{alert_id}/reopen",
+    response_model=AlertRead,
+)
+def reopen_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+):
+    alert = get_alert_or_404(
+        alert_id,
+        db,
+    )
+
+    return apply_alert_transition(
+        alert,
+        REOPENED,
+        db,
+    )
+

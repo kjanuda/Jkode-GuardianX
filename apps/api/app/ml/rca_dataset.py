@@ -5,6 +5,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ml.features import (
+    build_features_from_evidence_map,
+)
+
 from app.models.rca import (
     RCACase,
     RCAEvidence,
@@ -19,58 +23,6 @@ STRUCTURED_ENGINE = (
 CONSENSUS_ENGINE = (
     "RCA_CONSENSUS_V1"
 )
-
-
-FEATURE_EVIDENCE_MAP = {
-    "population_affected_ratio":
-        "POPULATION_AFFECTED_RATIO",
-
-    "device_model_pattern":
-        "DEVICE_MODEL_PATTERN",
-
-    "population_sample_quality":
-        "POPULATION_SAMPLE_QUALITY",
-
-    "congestion_signature":
-        "CELL_CONGESTION_SIGNATURE",
-
-    "coverage_signature":
-        "CELL_COVERAGE_SIGNATURE",
-
-    "interference_signature":
-        "CELL_INTERFERENCE_SIGNATURE",
-
-    "outage_signature":
-        "CELL_OUTAGE_SIGNATURE",
-
-    "terrain_context":
-        "CELL_TERRAIN_CONTEXT",
-
-    "vegetation_context":
-        "CELL_VEGETATION_CONTEXT",
-
-    "weather_context":
-        "CELL_WEATHER_CONTEXT",
-
-    "historical_context":
-        "CELL_HISTORICAL_CONTEXT",
-}
-
-
-def evidence_value(
-    evidence: RCAEvidence | None,
-) -> Any:
-    if evidence is None:
-        return None
-
-    value_json = (
-        evidence.value_json
-        or {}
-    )
-
-    return value_json.get(
-        "value"
-    )
 
 
 def latest_prediction(
@@ -152,6 +104,19 @@ def build_case_training_row(
         for item in evidence_items
     }
 
+    # -----------------------------------------
+    # Shared feature extraction
+    #
+    # Dataset export and live inference both
+    # use build_features_from_evidence_map().
+    # -----------------------------------------
+
+    features = (
+        build_features_from_evidence_map(
+            evidence_map
+        )
+    )
+
     consensus = latest_prediction(
         db=db,
         case_id=case.id,
@@ -180,118 +145,6 @@ def build_case_training_row(
         else None
     )
 
-    features = {}
-
-    for (
-        feature_name,
-        evidence_key,
-    ) in FEATURE_EVIDENCE_MAP.items():
-        features[
-            feature_name
-        ] = evidence_value(
-            evidence_map.get(
-                evidence_key
-            )
-        )
-
-    # -----------------------------------------
-    # Additional continuous context features
-    # -----------------------------------------
-
-    terrain = evidence_map.get(
-        "CELL_TERRAIN_CONTEXT"
-    )
-
-    terrain_context = (
-        terrain.context_json
-        if terrain is not None
-        else {}
-    ) or {}
-
-    vegetation = evidence_map.get(
-        "CELL_VEGETATION_CONTEXT"
-    )
-
-    vegetation_context = (
-        vegetation.context_json
-        if vegetation is not None
-        else {}
-    ) or {}
-
-    weather = evidence_map.get(
-        "CELL_WEATHER_CONTEXT"
-    )
-
-    weather_context = (
-        weather.context_json
-        if weather is not None
-        else {}
-    ) or {}
-
-    population = evidence_map.get(
-        "POPULATION_AFFECTED_RATIO"
-    )
-
-    population_context = (
-        population.context_json
-        if population is not None
-        else {}
-    ) or {}
-
-    features.update(
-        {
-            "total_devices":
-                population_context.get(
-                    "total_devices"
-                ),
-
-            "affected_devices":
-                population_context.get(
-                    "affected_devices"
-                ),
-
-            "healthy_devices":
-                population_context.get(
-                    "healthy_devices"
-                ),
-
-            "mean_los_blocked_pct":
-                terrain_context.get(
-                    "mean_los_blocked_pct"
-                ),
-
-            "mean_geo_vulnerability":
-                terrain_context.get(
-                    "mean_geo_vulnerability"
-                ),
-
-            "mean_fresnel_occupancy_pct":
-                terrain_context.get(
-                    "mean_fresnel_occupancy_pct"
-                ),
-
-            "mean_max_fresnel_intrusion_m":
-                terrain_context.get(
-                    "mean_max_fresnel_intrusion_m"
-                ),
-
-            "mean_minimum_clearance_ratio":
-                terrain_context.get(
-                    "mean_minimum_clearance_ratio"
-                ),
-
-            "mean_environmental_vulnerability":
-                vegetation_context.get(
-                    "mean_environmental_vulnerability"
-                ),
-
-            "mean_weather_score":
-                weather_context.get(
-                    "mean_weather_score"
-                ),
-        }
-    )
-
     root_cause = (
         structured_output.get(
             "primary_root_cause"
@@ -309,11 +162,17 @@ def build_case_training_row(
         )
     )
 
-    # For now, only consensus-agreement rows
-    # are considered high-quality training rows.
+    # -----------------------------------------
+    # Training eligibility
     #
-    # We retain other verified rows in the
-    # exported dataset but mark them ineligible.
+    # Only consensus-agreement rows with no
+    # human review requirement are considered
+    # high-quality ML training examples.
+    #
+    # Other verified rows remain in the
+    # exported dataset but are marked
+    # training_eligible=False.
+    # -----------------------------------------
 
     training_eligible = (
         consensus_status
@@ -344,16 +203,26 @@ def build_case_training_row(
         "risk_level":
             case.risk_level,
 
+        # -------------------------------------
+        # Shared ML features
+        # -------------------------------------
+
         **features,
 
+        # -------------------------------------
         # Labels
+        # -------------------------------------
+
         "label_domain":
             domain,
 
         "label_primary_cause":
             root_cause,
 
+        # -------------------------------------
         # Metadata — not model features
+        # -------------------------------------
+
         "label_confidence":
             confidence,
 

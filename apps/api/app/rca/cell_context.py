@@ -15,6 +15,10 @@ from app.correlation.population import (
     select_latest_per_device,
 )
 
+from app.rca.synthetic_context import (
+    build_synthetic_risk_context,
+)
+
 
 def mean(
     values: list[float],
@@ -105,6 +109,27 @@ def analyze_cell_context(
         if device is None:
             continue
 
+        # -----------------------------------------------------
+        # Explicit synthetic terrain fixture path
+        # -----------------------------------------------------
+
+        synthetic_context = (
+            build_synthetic_risk_context(
+                row
+            )
+        )
+
+        if synthetic_context is not None:
+            contexts.append(
+                synthetic_context
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # Normal production / live context path
+        # -----------------------------------------------------
+
         try:
             risk = get_device_risk(
                 device_external_id=device.device_id,
@@ -134,6 +159,8 @@ def analyze_cell_context(
             "successful_devices": 0,
 
             "errors": errors,
+
+            "context_sources": [],
 
             "los_blocked_ratio": 0.0,
 
@@ -170,6 +197,18 @@ def analyze_cell_context(
         }
 
     total = len(contexts)
+
+    context_sources = sorted(
+        {
+            str(
+                item.get(
+                    "_context_source",
+                    "LIVE_RISK_CONTEXT",
+                )
+            )
+            for item in contexts
+        }
+    )
 
     def fraction(
         predicate,
@@ -331,6 +370,9 @@ def analyze_cell_context(
 
     return {
         "context_available": True,
+
+        "context_sources":
+            context_sources,
 
         "sampled_devices": len(
             sampled_rows

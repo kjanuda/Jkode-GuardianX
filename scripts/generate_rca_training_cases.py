@@ -67,6 +67,9 @@ SCENARIOS = {
         "expected_domain":
             "PROPAGATION_DOMAIN",
 
+        # The actual expected cause for coverage is
+        # selected from COVERAGE_EXPECTED_CAUSES
+        # using --coverage-subtype.
         "expected_cause":
             "TERRAIN_PROPAGATION_LIKELY",
     },
@@ -87,6 +90,42 @@ SCENARIOS = {
             "OUTAGE",
     },
 }
+
+
+# Coverage has two deliberately different synthetic
+# root-cause fixtures:
+#
+# generic:
+#   RF degradation / coverage loss without a known
+#   terrain obstruction path.
+#
+# terrain:
+#   controlled terrain / Fresnel / LOS evidence.
+#
+# Keep these values aligned with the RCA cause constants
+# used by the API.
+COVERAGE_EXPECTED_CAUSES = {
+    "generic":
+        "COVERAGE_OR_PROPAGATION",
+
+    "terrain":
+        "TERRAIN_PROPAGATION_LIKELY",
+}
+
+
+# These fields are provenance / validation metadata.
+# They must NOT be passed into the ML feature matrix.
+ML_METADATA_ONLY_FIELDS = (
+    "mode",
+    "profile",
+    "coverage_subtype",
+    "target_model",
+    "seed",
+    "generation_group",
+    "expected_domain",
+    "expected_cause",
+    "verified_cause",
+)
 
 
 SEED_OFFSETS = {
@@ -121,26 +160,47 @@ def post_json(
 def run_simulator(
     *,
     mode: str,
+    profile: str,
+    coverage_subtype: str,
+    target_model: str | None,
     seed: int,
 ) -> None:
+    command = [
+        sys.executable,
+        str(SIMULATOR),
+        "--mode",
+        mode,
+        "--count-per-model",
+        "10",
+        "--profile",
+        profile,
+        "--seed",
+        str(seed),
+    ]
+
+    # Coverage is the only mode that needs the explicit
+    # generic-vs-terrain subtype.
+    if mode == "coverage":
+        command.extend(
+            [
+                "--coverage-subtype",
+                coverage_subtype,
+            ]
+        )
+
+    # target-model is useful for model-specific fixtures.
+    # Only add it when the caller explicitly selected one.
+    if target_model:
+        command.extend(
+            [
+                "--target-model",
+                target_model,
+            ]
+        )
+
     result = subprocess.run(
-        [
-            sys.executable,
-            str(
-                SIMULATOR
-            ),
-            "--mode",
-            mode,
-            "--count-per-model",
-            "10",
-            "--seed",
-            str(
-                seed
-            ),
-        ],
-        cwd=str(
-            API_ROOT
-        ),
+        command,
+        cwd=str(API_ROOT),
         capture_output=True,
         text=True,
     )
@@ -210,6 +270,46 @@ def main():
         "--base-seed",
         type=int,
         default=34000,
+    )
+
+    parser.add_argument(
+        "--profile",
+        choices=[
+            "mild",
+            "moderate",
+            "severe",
+        ],
+        default="moderate",
+        help=(
+            "Synthetic severity profile passed "
+            "to the population simulator."
+        ),
+    )
+
+    parser.add_argument(
+        "--coverage-subtype",
+        choices=[
+            "generic",
+            "terrain",
+        ],
+        default="generic",
+        help=(
+            "Coverage fixture subtype. "
+            "'generic' represents RF coverage/"
+            "propagation degradation without "
+            "terrain obstruction. "
+            "'terrain' injects controlled "
+            "synthetic terrain evidence."
+        ),
+    )
+
+    parser.add_argument(
+        "--target-model",
+        default=None,
+        help=(
+            "Optional target device model passed "
+            "to the population simulator."
+        ),
     )
 
     parser.add_argument(
@@ -284,11 +384,33 @@ def main():
     print("=" * 72)
 
     for mode in selected_modes:
+        effective_coverage_subtype = (
+            args.coverage_subtype
+            if mode == "coverage"
+            else "NA"
+        )
+
+        effective_target_model = (
+            (
+                args.target_model
+                or "DemoPhone X1"
+            )
+            if mode == "device-model"
+            else "NA"
+        )
+
         expected = (
             SCENARIOS[
                 mode
-            ]
+            ].copy()
         )
+
+        if mode == "coverage":
+            expected["expected_cause"] = (
+                COVERAGE_EXPECTED_CAUSES[
+                    effective_coverage_subtype
+                ]
+            )
 
         for run_index in range(
             args.runs_per_mode
@@ -304,12 +426,23 @@ def main():
             print()
             print(
                 f"[{generated + 1}/{total}] "
-                f"{mode} | seed={seed}"
+                f"{mode} | "
+                f"profile={args.profile} | "
+                f"coverage_subtype="
+                f"{args.coverage_subtype} | "
+                f"target_model="
+                f"{args.target_model or 'ALL_MODELS'} | "
+                f"seed={seed}"
             )
 
             try:
                 run_simulator(
                     mode=mode,
+                    profile=args.profile,
+                    coverage_subtype=(
+                        args.coverage_subtype
+                    ),
+                    target_model=args.target_model,
                     seed=seed,
                 )
 
@@ -376,7 +509,15 @@ def main():
 
                 row = {
                     "schema_version":
-                        "SYNTHETIC_RCA_MANIFEST_V1",
+                        "SYNTHETIC_RCA_MANIFEST_V2",
+
+                    # Explicit contract for downstream training:
+                    # these are metadata/provenance fields only
+                    # and must never become ML input features.
+                    "ml_metadata_only_fields":
+                        list(
+                            ML_METADATA_ONLY_FIELDS
+                        ),
 
                     "data_origin":
                         "SYNTHETIC",
@@ -387,8 +528,31 @@ def main():
                     "batch_id":
                         batch_id,
 
-                    "generation_group":
-                        f"{batch_id}:{mode}",
+                    "generation_group": (
+                        f"{mode}:"
+                        f"{args.profile}:"
+                        f"{effective_coverage_subtype}:"
+                        f"{effective_target_model}"
+                    ),
+
+                    # Required provenance fields.
+                    "mode":
+                        mode,
+
+                    "profile":
+                        args.profile,
+
+                    "coverage_subtype": (
+                        effective_coverage_subtype
+                        if mode == "coverage"
+                        else None
+                    ),
+
+                    "target_model": (
+                        effective_target_model
+                        if mode == "device-model"
+                        else None
+                    ),
 
                     "seed":
                         seed,

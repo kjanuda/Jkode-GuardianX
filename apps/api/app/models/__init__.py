@@ -6,6 +6,10 @@ from app.models.sector import Sector
 from app.models.cell import Cell
 from app.models.telemetry import Telemetry
 from app.models.alert import Alert
+from app.models.action import ActionPlan
+from app.models.action_simulation import ActionSimulation
+from app.models.action_verification import ActionVerification
+from app.models.action_feedback import ActionFeedback
 
 from app.models.rca import (
     RCACase,
@@ -25,8 +29,13 @@ __all__ = [
     "Cell",
     "Telemetry",
     "Alert",
+    "ActionPlan",
+    "ActionSimulation",
+    "ActionVerification",
+    "ActionFeedback",
     "RCACase",
     "RCAEvidence",
     "RCAPrediction",
     "DeviceProfile",
 ]
+

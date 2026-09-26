@@ -1,0 +1,143 @@
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+from app.api.alerts import (
+    router as alerts_router,
+)
+from app.api.dashboard import (
+    router as dashboard_router,
+)
+from app.api.environment import (
+    router as environment_router,
+)
+from app.api.features import router as features_router
+from app.api.geo import router as geo_router
+from app.api.network import router as network_router
+from app.api.propagation import router as propagation_router
+from app.api.rca import (
+    router as rca_router,
+)
+from app.api.risk import router as risk_router
+from app.api.telemetry import router as telemetry_router
+from app.api.weather import (
+    router as weather_router,
+)
+from app.api.correlation import (
+    router as correlation_router,
+)
+
+from app.db.health import (
+    check_database_connection,
+)
+
+
+app = FastAPI(
+    title="Guardian X API",
+    description="Geo-Aware Network Intelligence Platform",
+    version="0.1.0",
+)
+
+
+# =====================================================
+# API ROUTERS
+# =====================================================
+
+app.include_router(
+    network_router
+)
+
+app.include_router(
+    telemetry_router
+)
+
+app.include_router(
+    features_router
+)
+
+app.include_router(
+    risk_router
+)
+
+app.include_router(
+    geo_router
+)
+
+app.include_router(
+    propagation_router
+)
+
+app.include_router(
+    environment_router
+)
+
+app.include_router(
+    weather_router
+)
+
+app.include_router(
+    alerts_router
+)
+
+app.include_router(
+    dashboard_router
+)
+
+app.include_router(
+    rca_router
+)
+
+app.include_router(
+    correlation_router
+)
+
+
+# =====================================================
+# ROOT
+# =====================================================
+
+@app.get("/")
+async def root():
+    return {
+        "project": "Guardian X",
+        "status": "running",
+        "version": "0.1.0",
+    }
+
+
+# =====================================================
+# HEALTH
+# =====================================================
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+    }
+
+
+# =====================================================
+# DATABASE HEALTH
+# =====================================================
+
+@app.get("/health/db")
+async def database_health_check():
+    try:
+        database = (
+            check_database_connection()
+        )
+
+        return {
+            "status": "healthy",
+            "database": database["database"],
+            "postgis": database["postgis"],
+        }
+
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "database": "connection_failed",
+                "error": str(exc),
+            },
+        )

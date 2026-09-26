@@ -1,0 +1,856 @@
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+)
+
+from sqlalchemy import (
+    distinct,
+    func,
+    select,
+)
+
+from sqlalchemy.orm import Session
+
+from app.api.risk import (
+    get_device_risk,
+)
+
+from app.db.session import (
+    get_db,
+)
+
+from app.models import (
+    Alert,
+    Device,
+    Telemetry,
+)
+
+from app.schemas.dashboard import (
+    DashboardAlertItem,
+    DashboardDeviceOverview,
+    DashboardSummary,
+)
+
+
+from app.services.alert_lifecycle import (
+    ACTIVE_ALERT_STATUSES,
+)
+
+router = APIRouter(
+    prefix="/api/v1/dashboard",
+    tags=["Dashboard"],
+)
+
+
+# ----------------------------------------------------
+# Dashboard summary
+# ----------------------------------------------------
+
+
+@router.get(
+    "/summary",
+    response_model=DashboardSummary,
+)
+def get_dashboard_summary(
+    db: Session = Depends(get_db),
+):
+    total_devices = (
+        db.scalar(
+            select(
+                func.count(
+                    Device.id
+                )
+            )
+        )
+        or 0
+    )
+
+    active_alerts = (
+        db.scalar(
+            select(
+                func.count(
+                    Alert.id
+                )
+            ).where(
+                Alert.status.in_(ACTIVE_ALERT_STATUSES)
+            )
+        )
+        or 0
+    )
+
+    critical_alerts = (
+        db.scalar(
+            select(
+                func.count(
+                    Alert.id
+                )
+            ).where(
+                Alert.status.in_(ACTIVE_ALERT_STATUSES),
+                Alert.severity
+                == "CRITICAL",
+            )
+        )
+        or 0
+    )
+
+    high_alerts = (
+        db.scalar(
+            select(
+                func.count(
+                    Alert.id
+                )
+            ).where(
+                Alert.status.in_(ACTIVE_ALERT_STATUSES),
+                Alert.severity
+                == "HIGH",
+            )
+        )
+        or 0
+    )
+
+    devices_with_active_alerts = (
+        db.scalar(
+            select(
+                func.count(
+                    distinct(
+                        Alert.device_id
+                    )
+                )
+            ).where(
+                Alert.status.in_(ACTIVE_ALERT_STATUSES)
+            )
+        )
+        or 0
+    )
+
+    latest_rows = db.execute(
+        select(
+            Alert,
+            Device.device_id,
+        )
+        .join(
+            Device,
+            Alert.device_id
+            == Device.id,
+        )
+        .order_by(
+            Alert.last_seen_at.desc()
+        )
+        .limit(10)
+    ).all()
+
+    latest_incidents = [
+        {
+            "id":
+                alert.id,
+
+            "device_id":
+                external_device_id,
+
+            "status":
+                alert.status,
+
+            "severity":
+                alert.severity,
+
+            "risk_score":
+                alert.risk_score,
+
+            "primary_cause":
+                alert.primary_cause,
+
+            "title":
+                alert.title,
+
+            "occurrence_count":
+                alert.occurrence_count,
+
+            "first_seen_at":
+                alert.first_seen_at,
+
+            "last_seen_at":
+                alert.last_seen_at,
+
+            "resolved_at":
+                alert.resolved_at,
+        }
+
+        for (
+            alert,
+            external_device_id,
+        ) in latest_rows
+    ]
+
+    return {
+        "total_devices":
+            total_devices,
+
+        "active_alerts":
+            active_alerts,
+
+        "critical_alerts":
+            critical_alerts,
+
+        "high_alerts":
+            high_alerts,
+
+        "devices_with_active_alerts":
+            devices_with_active_alerts,
+
+        "latest_incidents":
+            latest_incidents,
+    }
+
+
+# ----------------------------------------------------
+# Per-device dashboard overview
+# ----------------------------------------------------
+
+
+@router.get(
+    "/device/{device_external_id}",
+    response_model=DashboardDeviceOverview,
+)
+def get_dashboard_device(
+    device_external_id: str,
+    db: Session = Depends(get_db),
+):
+    device = db.scalar(
+        select(Device).where(
+            Device.device_id
+            == device_external_id
+        )
+    )
+
+    if device is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found",
+        )
+
+    latest = db.scalar(
+        select(Telemetry)
+        .where(
+            Telemetry.device_id
+            == device.id
+        )
+        .order_by(
+            Telemetry.timestamp.desc(),
+            Telemetry.id.desc(),
+        )
+        .limit(1)
+    )
+
+    if latest is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No telemetry found",
+        )
+
+    risk = get_device_risk(
+        device_external_id=(
+            device_external_id
+        ),
+        history_limit=10,
+        db=db,
+    )
+
+    active_alert_count = (
+        db.scalar(
+            select(
+                func.count(
+                    Alert.id
+                )
+            ).where(
+                Alert.device_id
+                == device.id,
+
+                Alert.status.in_(ACTIVE_ALERT_STATUSES),
+            )
+        )
+        or 0
+    )
+
+    causes = risk.get(
+        "likely_causes",
+        [],
+    )
+
+    primary_cause = (
+        causes[0]
+        if causes
+        else "UNKNOWN"
+    )
+
+    return {
+        "device_id":
+            device.device_id,
+
+        "latest_telemetry_id":
+            latest.id,
+
+        "latest_timestamp":
+            latest.timestamp,
+
+        "scenario":
+            latest.scenario,
+
+        "risk_score":
+            risk[
+                "risk_score"
+            ],
+
+        "risk_level":
+            risk[
+                "risk_level"
+            ],
+
+        "current_radio_health":
+            risk[
+                "current_radio_health"
+            ],
+
+        "current_network_health":
+            risk[
+                "current_network_health"
+            ],
+
+        "historical_health_score":
+            risk[
+                "historical_health_score"
+            ],
+
+        "historical_health":
+            risk[
+                "historical_health"
+            ],
+
+        "historical_trend":
+            risk[
+                "historical_trend"
+            ],
+
+        "persistent_poor_state":
+            risk[
+                "persistent_poor_state"
+            ],
+
+        "geo_vulnerability_score":
+            risk[
+                "geo_vulnerability_score"
+            ],
+
+        "geo_vulnerability_level":
+            risk[
+                "geo_vulnerability_level"
+            ],
+
+        "environmental_vulnerability_score":
+            risk[
+                "environmental_vulnerability_score"
+            ],
+
+        "environmental_vulnerability_level":
+            risk[
+                "environmental_vulnerability_level"
+            ],
+
+        "weather_context_score":
+            risk[
+                "weather_context_score"
+            ],
+
+        "weather_context_level":
+            risk[
+                "weather_context_level"
+            ],
+
+        "primary_cause":
+            primary_cause,
+
+        "alert_required":
+            risk[
+                "alert_required"
+            ],
+
+        "active_alert_count":
+            active_alert_count,
+    }
+
+
+# ====================================================
+# STEP 38A DASHBOARD OVERVIEW V1
+# ====================================================
+
+from datetime import (
+    datetime as _dashboard_datetime,
+    timezone as _dashboard_timezone,
+)
+
+from sqlalchemy import (
+    func as _dashboard_func,
+    select as _dashboard_select,
+)
+
+from app.models.action import (
+    ActionPlan as _DashboardActionPlan,
+)
+
+from app.models.action_feedback import (
+    ActionFeedback as _DashboardActionFeedback,
+)
+
+from app.models.rca import (
+    RCACase as _DashboardRCACase,
+    RCAPrediction as _DashboardRCAPrediction,
+)
+
+
+_DASHBOARD_SCHEMA_VERSION = (
+    "DASHBOARD_OVERVIEW_V1"
+)
+
+
+def _dashboard_count_by(
+    db: Session,
+    model,
+    column,
+) -> dict[str, int]:
+    rows = db.execute(
+        _dashboard_select(
+            column,
+            _dashboard_func.count(
+                model.id
+            ),
+        )
+        .group_by(
+            column
+        )
+    ).all()
+
+    result: dict[str, int] = {}
+
+    for value, count in rows:
+        key = (
+            str(value)
+            if value is not None
+            else "UNKNOWN"
+        )
+
+        result[key] = int(
+            count
+            or 0
+        )
+
+    return result
+
+
+@router.get(
+    "/overview"
+)
+def get_dashboard_overview(
+    db: Session = Depends(
+        get_db
+    ),
+):
+    # ------------------------------------------------
+    # Reuse the already-tested dashboard summary.
+    # ------------------------------------------------
+
+    existing_summary = (
+        get_dashboard_summary(
+            db=db
+        )
+    )
+
+    total_devices = int(
+        existing_summary.get(
+            "total_devices",
+            0,
+        )
+        or 0
+    )
+
+    devices_with_active_alerts = int(
+        existing_summary.get(
+            "devices_with_active_alerts",
+            0,
+        )
+        or 0
+    )
+
+    devices_without_active_alerts = max(
+        0,
+        total_devices
+        - devices_with_active_alerts,
+    )
+
+    active_alert_ratio = (
+        round(
+            devices_with_active_alerts
+            / total_devices,
+            4,
+        )
+        if total_devices
+        else 0.0
+    )
+
+    # ------------------------------------------------
+    # Alerts
+    # ------------------------------------------------
+
+    alert_status_counts = (
+        _dashboard_count_by(
+            db,
+            Alert,
+            Alert.status,
+        )
+    )
+
+    alert_severity_counts = (
+        _dashboard_count_by(
+            db,
+            Alert,
+            Alert.severity,
+        )
+    )
+
+    total_alerts = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    Alert.id
+                )
+            )
+        )
+        or 0
+    )
+
+    # ------------------------------------------------
+    # RCA
+    # ------------------------------------------------
+
+    total_rca_cases = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardRCACase.id
+                )
+            )
+        )
+        or 0
+    )
+
+    rca_status_counts = (
+        _dashboard_count_by(
+            db,
+            _DashboardRCACase,
+            _DashboardRCACase.status,
+        )
+    )
+
+    prediction_engine_counts = (
+        _dashboard_count_by(
+            db,
+            _DashboardRCAPrediction,
+            _DashboardRCAPrediction.engine_type,
+        )
+    )
+
+    verified_structured = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardRCAPrediction.id
+                )
+            )
+            .where(
+                _DashboardRCAPrediction.engine_type
+                == "STRUCTURED_RCA_V1"
+            )
+            .where(
+                _DashboardRCAPrediction.verifier_status
+                == "VERIFIED"
+            )
+        )
+        or 0
+    )
+
+    rejected_structured = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardRCAPrediction.id
+                )
+            )
+            .where(
+                _DashboardRCAPrediction.engine_type
+                == "STRUCTURED_RCA_V1"
+            )
+            .where(
+                _DashboardRCAPrediction.verifier_status
+                == "REJECTED"
+            )
+        )
+        or 0
+    )
+
+    # ------------------------------------------------
+    # Actions
+    # ------------------------------------------------
+
+    total_action_plans = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardActionPlan.id
+                )
+            )
+        )
+        or 0
+    )
+
+    action_status_counts = (
+        _dashboard_count_by(
+            db,
+            _DashboardActionPlan,
+            _DashboardActionPlan.status,
+        )
+    )
+
+    action_execution_modes = (
+        _dashboard_count_by(
+            db,
+            _DashboardActionPlan,
+            _DashboardActionPlan.execution_mode,
+        )
+    )
+
+    auto_eligible_actions = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardActionPlan.id
+                )
+            )
+            .where(
+                _DashboardActionPlan.auto_eligible
+                .is_(True)
+            )
+        )
+        or 0
+    )
+
+    human_approval_actions = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardActionPlan.id
+                )
+            )
+            .where(
+                _DashboardActionPlan.requires_human_approval
+                .is_(True)
+            )
+        )
+        or 0
+    )
+
+    # ------------------------------------------------
+    # Feedback
+    # ------------------------------------------------
+
+    total_feedback = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardActionFeedback.id
+                )
+            )
+        )
+        or 0
+    )
+
+    feedback_status_counts = (
+        _dashboard_count_by(
+            db,
+            _DashboardActionFeedback,
+            _DashboardActionFeedback.feedback_status,
+        )
+    )
+
+    feedback_quality_counts = (
+        _dashboard_count_by(
+            db,
+            _DashboardActionFeedback,
+            _DashboardActionFeedback.quality_gate_status,
+        )
+    )
+
+    training_eligible_feedback = int(
+        db.scalar(
+            _dashboard_select(
+                _dashboard_func.count(
+                    _DashboardActionFeedback.id
+                )
+            )
+            .where(
+                _DashboardActionFeedback.training_eligible
+                .is_(True)
+            )
+        )
+        or 0
+    )
+
+    # ------------------------------------------------
+    # Safety snapshot
+    #
+    # This is descriptive state only.
+    # It does NOT enable execution.
+    # ------------------------------------------------
+
+    safety = {
+        "execution_mode":
+            "ADVISORY",
+
+        "real_network_execution_enabled":
+            False,
+
+        "auto_execution_enabled":
+            False,
+
+        "human_approval_required":
+            True,
+
+        "auto_eligible_action_count":
+            auto_eligible_actions,
+
+        "human_approval_action_count":
+            human_approval_actions,
+    }
+
+    return {
+        "schema_version":
+            _DASHBOARD_SCHEMA_VERSION,
+
+        "generated_at":
+            _dashboard_datetime.now(
+                _dashboard_timezone.utc
+            ),
+
+        "network":
+            {
+                "total_devices":
+                    total_devices,
+
+                "devices_with_active_alerts":
+                    devices_with_active_alerts,
+
+                "devices_without_active_alerts":
+                    devices_without_active_alerts,
+
+                "active_alert_device_ratio":
+                    active_alert_ratio,
+            },
+
+        "alerts":
+            {
+                "total":
+                    total_alerts,
+
+                "active":
+                    int(
+                        existing_summary.get(
+                            "active_alerts",
+                            0,
+                        )
+                        or 0
+                    ),
+
+                "critical":
+                    int(
+                        existing_summary.get(
+                            "critical_alerts",
+                            0,
+                        )
+                        or 0
+                    ),
+
+                "high":
+                    int(
+                        existing_summary.get(
+                            "high_alerts",
+                            0,
+                        )
+                        or 0
+                    ),
+
+                "by_status":
+                    alert_status_counts,
+
+                "by_severity":
+                    alert_severity_counts,
+            },
+
+        "rca":
+            {
+                "total_cases":
+                    total_rca_cases,
+
+                "by_status":
+                    rca_status_counts,
+
+                "predictions_by_engine":
+                    prediction_engine_counts,
+
+                "verified_structured_predictions":
+                    verified_structured,
+
+                "rejected_structured_predictions":
+                    rejected_structured,
+            },
+
+        "actions":
+            {
+                "total":
+                    total_action_plans,
+
+                "by_status":
+                    action_status_counts,
+
+                "execution_modes":
+                    action_execution_modes,
+
+                "auto_eligible":
+                    auto_eligible_actions,
+
+                "requires_human_approval":
+                    human_approval_actions,
+            },
+
+        "feedback":
+            {
+                "total":
+                    total_feedback,
+
+                "by_status":
+                    feedback_status_counts,
+
+                "quality_gates":
+                    feedback_quality_counts,
+
+                "training_eligible":
+                    training_eligible_feedback,
+            },
+
+        "recent_incidents":
+            existing_summary.get(
+                "latest_incidents",
+                [],
+            ),
+
+        "safety":
+            safety,
+    }
+

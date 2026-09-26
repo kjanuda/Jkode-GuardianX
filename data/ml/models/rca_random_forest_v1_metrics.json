@@ -1,0 +1,202 @@
+{
+  "schema_version": "GUARDIAN_X_RCA_ML_V1",
+  "evaluation_type": "SYNTHETIC_GROUP_AWARE_CV",
+  "training_rows": 144,
+  "group_count": 27,
+  "classes": [
+    "CONGESTION_OR_BACKHAUL",
+    "COVERAGE_OR_PROPAGATION",
+    "DEVICE_MODEL_OR_FIRMWARE",
+    "INTERFERENCE",
+    "OUTAGE",
+    "TERRAIN_PROPAGATION_LIKELY"
+  ],
+  "feature_columns": [
+    "population_affected_ratio",
+    "congestion_signature",
+    "coverage_signature",
+    "interference_signature",
+    "outage_signature",
+    "terrain_context",
+    "vegetation_context",
+    "historical_context",
+    "affected_devices",
+    "healthy_devices",
+    "mean_los_blocked_pct",
+    "mean_geo_vulnerability",
+    "mean_fresnel_occupancy_pct",
+    "mean_max_fresnel_intrusion_m",
+    "mean_minimum_clearance_ratio",
+    "mean_environmental_vulnerability",
+    "mean_weather_score",
+    "device_model_pattern"
+  ],
+  "numeric_features": [
+    "population_affected_ratio",
+    "congestion_signature",
+    "coverage_signature",
+    "interference_signature",
+    "outage_signature",
+    "terrain_context",
+    "vegetation_context",
+    "historical_context",
+    "affected_devices",
+    "healthy_devices",
+    "mean_los_blocked_pct",
+    "mean_geo_vulnerability",
+    "mean_fresnel_occupancy_pct",
+    "mean_max_fresnel_intrusion_m",
+    "mean_minimum_clearance_ratio",
+    "mean_environmental_vulnerability",
+    "mean_weather_score"
+  ],
+  "categorical_features": [
+    "device_model_pattern"
+  ],
+  "cv_folds": 3,
+  "fold_results": [
+    {
+      "fold": 1,
+      "train_rows": 96,
+      "test_rows": 48,
+      "train_groups": 18,
+      "test_groups": 9,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0
+    },
+    {
+      "fold": 2,
+      "train_rows": 96,
+      "test_rows": 48,
+      "train_groups": 18,
+      "test_groups": 9,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0
+    },
+    {
+      "fold": 3,
+      "train_rows": 96,
+      "test_rows": 48,
+      "train_groups": 18,
+      "test_groups": 9,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0
+    }
+  ],
+  "overall_accuracy": 1.0,
+  "overall_balanced_accuracy": 1.0,
+  "classification_report": {
+    "CONGESTION_OR_BACKHAUL": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 24.0
+    },
+    "COVERAGE_OR_PROPAGATION": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 24.0
+    },
+    "DEVICE_MODEL_OR_FIRMWARE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 24.0
+    },
+    "INTERFERENCE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 24.0
+    },
+    "OUTAGE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 24.0
+    },
+    "TERRAIN_PROPAGATION_LIKELY": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 24.0
+    },
+    "accuracy": 1.0,
+    "macro avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 144.0
+    },
+    "weighted avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 144.0
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "CONGESTION_OR_BACKHAUL",
+      "COVERAGE_OR_PROPAGATION",
+      "DEVICE_MODEL_OR_FIRMWARE",
+      "INTERFERENCE",
+      "OUTAGE",
+      "TERRAIN_PROPAGATION_LIKELY"
+    ],
+    "matrix": [
+      [
+        24,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        24,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        24,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        24,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        24,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        24
+      ]
+    ]
+  },
+  "dataset_sha256": "44eaedecf39c2d375331e2fbc6d8ac2aa6bf3f692789a30cbf1a618c663bf20f",
+  "manifest_sha256": "0f7f597fc68b4afedbd16588b05eb20b2e19ecc861f4755288974209373944d0",
+  "warning": "Metrics are measured on controlled synthetic verified RCA cases using group-aware cross-validation. They must not be represented as real-world production accuracy."
+}

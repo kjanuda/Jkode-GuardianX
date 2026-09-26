@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from pydantic import (
     BaseModel,
@@ -12,7 +12,6 @@ class AlertRead(BaseModel):
     )
 
     id: int
-
     device_id: int
 
     fingerprint: str
@@ -31,7 +30,15 @@ class AlertRead(BaseModel):
     first_seen_at: datetime
     last_seen_at: datetime
 
-    resolved_at: datetime | None
+    acknowledged_at: datetime | None = None
+    mitigation_started_at: datetime | None = None
+
+    reopened_at: datetime | None = None
+    reopened_count: int = 0
+
+    status_updated_at: datetime
+
+    resolved_at: datetime | None = None
 
 
 class AlertEvaluationResult(BaseModel):

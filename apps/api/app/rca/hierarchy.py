@@ -48,7 +48,15 @@ def best_available(
     candidates = [
         rankings[cause]
         for cause in allowed
-        if cause in rankings
+        if (
+            cause in rankings
+            and float(
+                rankings[cause].get(
+                    "confidence",
+                    0.0,
+                )
+            ) > 0.0
+        )
     ]
 
     if not candidates:

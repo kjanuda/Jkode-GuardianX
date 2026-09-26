@@ -13,6 +13,137 @@ BASE_LATITUDE = 7.2800
 BASE_LONGITUDE = 80.6600
 
 
+# ==========================================================
+# Coverage geo anchors
+# ==========================================================
+#
+# Fixed, previously validated anchors used for
+# deterministic placement of affected coverage devices.
+
+COVERAGE_GEO_ANCHORS = {
+    "a": {
+        "latitude": 7.280272,
+        "longitude": 80.657798,
+    },
+    "b": {
+        "latitude": 7.279228,
+        "longitude": 80.658015,
+    },
+    "c": {
+        "latitude": 7.282273,
+        "longitude": 80.658695,
+    },
+}
+
+
+COVERAGE_GEO_ANCHOR_ORDER = (
+    "a",
+    "b",
+    "c",
+)
+
+
+def get_coverage_geo_anchor(
+    anchor_name: str,
+) -> dict:
+    if (
+        anchor_name
+        not in COVERAGE_GEO_ANCHORS
+    ):
+        raise ValueError(
+            "Unknown coverage geo anchor: "
+            f"{anchor_name}"
+        )
+
+    return {
+        **COVERAGE_GEO_ANCHORS[
+            anchor_name
+        ],
+        "name": anchor_name,
+    }
+
+
+def get_coverage_geo_for_index(
+    affected_index: int,
+    anchor_mode: str,
+) -> dict:
+    if anchor_mode == "cycle":
+        anchor_name = (
+            COVERAGE_GEO_ANCHOR_ORDER[
+                affected_index
+                % len(
+                    COVERAGE_GEO_ANCHOR_ORDER
+                )
+            ]
+        )
+    else:
+        anchor_name = anchor_mode
+
+    anchor = get_coverage_geo_anchor(
+        anchor_name
+    )
+
+    return anchor
+
+
+# ==========================================================
+# Scenario severity profiles
+# ==========================================================
+
+SCENARIO_PROFILES = {
+    "mild": {
+        "affected_ratio": 0.60,
+        "severity": 0.60,
+        "background_ratio": 0.05,
+    },
+    "moderate": {
+        "affected_ratio": 0.80,
+        "severity": 0.75,
+        "background_ratio": 0.08,
+    },
+    "severe": {
+        "affected_ratio": 0.90,
+        "severity": 0.90,
+        "background_ratio": 0.10,
+    },
+}
+
+
+def get_scenario_profile(
+    profile_name: str,
+) -> dict:
+    if profile_name not in SCENARIO_PROFILES:
+        raise ValueError(
+            f"Unknown scenario profile: {profile_name}"
+        )
+
+    profile = SCENARIO_PROFILES[
+        profile_name
+    ].copy()
+
+    profile["name"] = profile_name
+
+    return profile
+
+
+def affected_limit(
+    count_per_model: int,
+    affected_ratio: float,
+) -> int:
+    limit = round(
+        count_per_model
+        * affected_ratio
+    )
+
+    return max(
+        1,
+        min(
+            count_per_model,
+            limit,
+        ),
+    )
+
+
 MODELS = [
     {
         "manufacturer": "Samsung",
@@ -297,15 +428,43 @@ def healthy_sample():
 # ==========================================================
 
 
-def network_degraded_sample():
+def network_degraded_sample(
+    profile_name: str = "moderate",
+):
     """
-    Healthy-ish radio +
-    poor network KPIs.
+    Healthy-ish radio with degraded network KPIs.
 
-    This looks more like congestion /
-    backhaul degradation than simple
-    coverage loss.
+    Profiles vary congestion/backhaul severity
+    while preserving the same RCA family.
     """
+
+    profiles = {
+        "mild": {
+            "dl": (10.0, 14.5),
+            "ul": (4.0, 8.0),
+            "latency": (85.0, 110.0),
+            "jitter": (10.0, 25.0),
+            "loss": (2.2, 4.0),
+        },
+        "moderate": {
+            "dl": (6.0, 10.0),
+            "ul": (2.0, 5.0),
+            "latency": (110.0, 150.0),
+            "jitter": (20.0, 40.0),
+            "loss": (4.0, 7.0),
+        },
+        "severe": {
+            "dl": (2.0, 6.0),
+            "ul": (0.8, 3.0),
+            "latency": (150.0, 220.0),
+            "jitter": (35.0, 65.0),
+            "loss": (7.0, 12.0),
+        },
+    }
+
+    config = profiles[
+        profile_name
+    ]
 
     rsrp = random.uniform(
         -94,
@@ -313,7 +472,12 @@ def network_degraded_sample():
     )
 
     return {
-        "scenario": "population_network",
+        "scenario": (
+            f"population_network_"
+            f"{profile_name}"
+        ),
+
+        # Healthy / usable radio.
         "rsrp": round(
             rsrp,
             2,
@@ -348,38 +512,35 @@ def network_degraded_sample():
             15,
             25,
         ),
+
+        # Profile-dependent network degradation.
         "dl_speed_mbps": round(
             random.uniform(
-                3,
-                13,
+                *config["dl"]
             ),
             2,
         ),
         "up_speed_mbps": round(
             random.uniform(
-                1,
-                6,
+                *config["ul"]
             ),
             2,
         ),
         "latency_ms": round(
             random.uniform(
-                90,
-                180,
+                *config["latency"]
             ),
             2,
         ),
         "jitter_ms": round(
             random.uniform(
-                15,
-                45,
+                *config["jitter"]
             ),
             2,
         ),
         "packet_loss_pct": round(
             random.uniform(
-                2.5,
-                6,
+                *config["loss"]
             ),
             2,
         ),
@@ -484,35 +645,80 @@ def device_model_fault_sample():
 # ==========================================================
 
 
-def coverage_degraded_sample():
+def coverage_degraded_sample(
+    profile_name: str = "moderate",
+    coverage_subtype: str = "generic",
+):
     """
-    Population-wide coverage /
-    propagation degradation.
+    Population-wide RF coverage / propagation degradation.
 
-    Strongly degraded radio KPIs:
-        RSRP  -> very weak
-        RSRQ  -> poor
-        SINR  -> poor
-
-    Network KPIs also degrade as a
-    consequence of weak radio quality.
+    Profiles vary RF severity while keeping
+    the scenario inside the same coverage family.
     """
+
+    profiles = {
+        "mild": {
+            "rsrp": (-112.0, -106.0),
+            "rsrq": (-15.5, -13.5),
+            "sinr": (3.0, 6.5),
+            "cqi": (4, 8),
+            "mcs": (7, 14),
+            "dl": (8.0, 14.0),
+            "ul": (3.0, 7.0),
+            "latency": (80.0, 115.0),
+            "jitter": (12.0, 28.0),
+            "loss": (2.2, 4.5),
+        },
+
+        "moderate": {
+            "rsrp": (-118.0, -112.0),
+            "rsrq": (-18.0, -15.0),
+            "sinr": (-1.0, 4.0),
+            "cqi": (2, 6),
+            "mcs": (4, 10),
+            "dl": (4.0, 10.0),
+            "ul": (1.5, 5.0),
+            "latency": (110.0, 155.0),
+            "jitter": (20.0, 40.0),
+            "loss": (4.0, 7.0),
+        },
+
+        "severe": {
+            "rsrp": (-124.0, -118.0),
+            "rsrq": (-21.0, -17.0),
+            "sinr": (-5.0, 1.0),
+            "cqi": (1, 4),
+            "mcs": (1, 7),
+            "dl": (1.0, 5.0),
+            "ul": (0.5, 3.0),
+            "latency": (150.0, 220.0),
+            "jitter": (35.0, 65.0),
+            "loss": (7.0, 12.0),
+        },
+    }
+
+    config = profiles[
+        profile_name
+    ]
 
     rsrp = random.uniform(
-        -121,
-        -111,
+        *config["rsrp"]
     )
 
     return {
-        "scenario": "population_coverage",
+        "scenario": (
+            f"population_coverage_"
+            f"{coverage_subtype}_"
+            f"{profile_name}"
+        ),
+
         "rsrp": round(
             rsrp,
             2,
         ),
         "rsrq": round(
             random.uniform(
-                -19,
-                -14,
+                *config["rsrq"]
             ),
             2,
         ),
@@ -526,51 +732,44 @@ def coverage_degraded_sample():
         ),
         "sinr": round(
             random.uniform(
-                -3,
-                5,
+                *config["sinr"]
             ),
             2,
         ),
         "cqi": random.randint(
-            1,
-            6,
+            *config["cqi"]
         ),
         "mcs": random.randint(
-            2,
-            10,
+            *config["mcs"]
         ),
+
         "dl_speed_mbps": round(
             random.uniform(
-                2,
-                12,
+                *config["dl"]
             ),
             2,
         ),
         "up_speed_mbps": round(
             random.uniform(
-                1,
-                5,
+                *config["ul"]
             ),
             2,
         ),
         "latency_ms": round(
             random.uniform(
-                90,
-                180,
+                *config["latency"]
             ),
             2,
         ),
         "jitter_ms": round(
             random.uniform(
-                15,
-                45,
+                *config["jitter"]
             ),
             2,
         ),
         "packet_loss_pct": round(
             random.uniform(
-                2.5,
-                8,
+                *config["loss"]
             ),
             2,
         ),
@@ -580,23 +779,80 @@ def coverage_degraded_sample():
 # ==========================================================
 # Population-wide interference degradation
 # ==========================================================
+#
+# All interference RSRP ranges stay >= -100 so the
+# interference detector's usable-RSRP condition is
+# preserved. The coverage signature's weak-RSRP
+# threshold is < -105, so these profiles stay safely
+# away from it.
+
+INTERFERENCE_PROFILES = {
+    "mild": {
+        "rsrp": (-96, -86),
+        "rsrq": (-16.5, -14.0),
+        "sinr": (2.0, 6.0),
+        "cqi": (5, 9),
+        "mcs": (8, 16),
+        "dl": (16, 25),
+        "ul": (6, 11),
+        "latency": (45, 75),
+        "jitter": (8, 18),
+        "loss": (0.8, 2.0),
+    },
+    "moderate": {
+        "rsrp": (-98, -86),
+        "rsrq": (-19.0, -16.0),
+        "sinr": (-1.0, 4.0),
+        "cqi": (3, 7),
+        "mcs": (5, 12),
+        "dl": (10, 18),
+        "ul": (4, 8),
+        "latency": (65, 105),
+        "jitter": (15, 30),
+        "loss": (1.5, 3.5),
+    },
+    "severe": {
+        "rsrp": (-99, -87),
+        "rsrq": (-22.0, -18.0),
+        "sinr": (-5.0, 1.0),
+        "cqi": (1, 5),
+        "mcs": (2, 8),
+        "dl": (5, 12),
+        "ul": (2, 6),
+        "latency": (90, 140),
+        "jitter": (25, 45),
+        "loss": (3.0, 6.0),
+    },
+}
 
 
-def interference_degraded_sample():
+def interference_degraded_sample(
+    profile: dict,
+):
     """
-    Usable signal strength but poor radio quality.
+    Usable signal strength with degraded
+    radio quality caused by interference.
 
-    Designed to represent interference rather than
-    simple weak-coverage propagation loss.
+    RSRP intentionally remains usable while
+    RSRQ and SINR become progressively worse
+    across mild/moderate/severe profiles.
     """
+
+    profile_name = profile["name"]
+
+    config = INTERFERENCE_PROFILES[
+        profile_name
+    ]
 
     rsrp = random.uniform(
-        -98,
-        -84,
+        *config["rsrp"]
     )
 
     return {
-        "scenario": "population_interference",
+        "scenario": (
+            f"population_interference_"
+            f"{profile_name}"
+        ),
 
         "rsrp": round(
             rsrp,
@@ -605,8 +861,7 @@ def interference_degraded_sample():
 
         "rsrq": round(
             random.uniform(
-                -20,
-                -15,
+                *config["rsrq"]
             ),
             2,
         ),
@@ -622,58 +877,50 @@ def interference_degraded_sample():
 
         "sinr": round(
             random.uniform(
-                -4,
-                5,
+                *config["sinr"]
             ),
             2,
         ),
 
         "cqi": random.randint(
-            2,
-            7,
+            *config["cqi"]
         ),
 
         "mcs": random.randint(
-            3,
-            12,
+            *config["mcs"]
         ),
 
         "dl_speed_mbps": round(
             random.uniform(
-                8,
-                25,
+                *config["dl"]
             ),
             2,
         ),
 
         "up_speed_mbps": round(
             random.uniform(
-                3,
-                10,
+                *config["ul"]
             ),
             2,
         ),
 
         "latency_ms": round(
             random.uniform(
-                50,
-                110,
+                *config["latency"]
             ),
             2,
         ),
 
         "jitter_ms": round(
             random.uniform(
-                10,
-                30,
+                *config["jitter"]
             ),
             2,
         ),
 
         "packet_loss_pct": round(
             random.uniform(
-                1,
-                4,
+                *config["loss"]
             ),
             2,
         ),
@@ -685,19 +932,48 @@ def interference_degraded_sample():
 # ==========================================================
 
 
-def outage_degraded_sample():
-    """
-    Healthy-ish radio conditions but near-total
-    service failure.
+OUTAGE_PROFILES = {
+    "mild": {
+        "dl": (0.65, 0.95),
+        "ul": (0.25, 0.55),
+        "latency": (250, 420),
+        "jitter": (60, 120),
+        "loss": (55, 70),
+    },
+    "moderate": {
+        "dl": (0.25, 0.60),
+        "ul": (0.08, 0.30),
+        "latency": (400, 650),
+        "jitter": (100, 200),
+        "loss": (70, 85),
+    },
+    "severe": {
+        "dl": (0.02, 0.20),
+        "ul": (0.01, 0.10),
+        "latency": (650, 1000),
+        "jitter": (180, 350),
+        "loss": (85, 98),
+    },
+}
 
-    Designed to produce an outage/network failure
-    signature rather than propagation degradation.
 
-    Radio KPIs are intentionally kept healthy
-    (RSRP -94..-82, RSRQ -11..-7, SINR 14..23)
-    so this scenario is not mistaken for a
-    coverage or interference problem.
+def outage_degraded_sample(
+    profile: dict,
+):
     """
+    Healthy radio conditions with severe
+    service-layer failure.
+
+    Radio remains healthy so outage cases
+    are not confused with coverage or
+    interference failures.
+    """
+
+    profile_name = profile["name"]
+
+    config = OUTAGE_PROFILES[
+        profile_name
+    ]
 
     rsrp = random.uniform(
         -94,
@@ -705,7 +981,10 @@ def outage_degraded_sample():
     )
 
     return {
-        "scenario": "population_outage",
+        "scenario": (
+            f"population_outage_"
+            f"{profile_name}"
+        ),
 
         "rsrp": round(
             rsrp,
@@ -749,44 +1028,40 @@ def outage_degraded_sample():
 
         "dl_speed_mbps": round(
             random.uniform(
-                0.02,
-                0.40,
+                *config["dl"]
             ),
             2,
         ),
 
         "up_speed_mbps": round(
             random.uniform(
-                0.01,
-                0.20,
+                *config["ul"]
             ),
             2,
         ),
 
         "latency_ms": round(
             random.uniform(
-                400,
-                900,
+                *config["latency"]
             ),
             2,
         ),
 
         "jitter_ms": round(
             random.uniform(
-                100,
-                300,
+                *config["jitter"]
             ),
             2,
         ),
 
         "packet_loss_pct": round(
             random.uniform(
-                70,
-                95,
+                *config["loss"]
             ),
             2,
         ),
     }
+
 
 
 # ==========================================================
@@ -797,22 +1072,33 @@ def outage_degraded_sample():
 def send_telemetry(
     device_id: str,
     sample: dict,
+    geo: dict | None = None,
 ):
-    latitude = (
-        BASE_LATITUDE
-        + random.uniform(
-            -0.003,
-            0.003,
+    if geo is None:
+        latitude = (
+            BASE_LATITUDE
+            + random.uniform(
+                -0.003,
+                0.003,
+            )
         )
-    )
 
-    longitude = (
-        BASE_LONGITUDE
-        + random.uniform(
-            -0.003,
-            0.003,
+        longitude = (
+            BASE_LONGITUDE
+            + random.uniform(
+                -0.003,
+                0.003,
+            )
         )
-    )
+
+    else:
+        latitude = float(
+            geo["latitude"]
+        )
+
+        longitude = float(
+            geo["longitude"]
+        )
 
     payload = {
         "device_id": device_id,
@@ -934,21 +1220,31 @@ def build_population(
 
 def run_network_test(
     population: list[dict],
+    profile: dict,
+    count_per_model: int,
 ):
     print()
     print("NETWORK-WIDE TEST")
     print("-" * 72)
 
-    # Around 80% of every model cohort
-    # becomes degraded.
+    # Affected share of every model cohort
+    # is controlled by the scenario profile
+    # (mild ~60%, moderate ~80%, severe ~90%).
+    limit = affected_limit(
+        count_per_model=count_per_model,
+        affected_ratio=profile[
+            "affected_ratio"
+        ],
+    )
+
     for device in population:
         affected = (
-            device["model_index"] < 8
+            device["model_index"] < limit
         )
 
         if affected:
-            sample = (
-                network_degraded_sample()
+            sample = network_degraded_sample(
+                profile["name"]
             )
             state = "AFFECTED"
 
@@ -977,12 +1273,42 @@ def run_network_test(
 
 def run_device_model_test(
     population: list[dict],
+    profile: dict,
+    count_per_model: int,
+    target_model: str,
 ):
     print()
     print("DEVICE-MODEL TEST")
     print("-" * 72)
 
-    target_model = "DemoPhone X1"
+    target_limit = affected_limit(
+        count_per_model=count_per_model,
+        affected_ratio=profile[
+            "affected_ratio"
+        ],
+    )
+
+    background_limit = affected_limit(
+        count_per_model=count_per_model,
+        affected_ratio=profile[
+            "background_ratio"
+        ],
+    )
+
+    print(
+        f"Target model     : {target_model}"
+    )
+    print(
+        "Target affected  : "
+        f"{target_limit}/"
+        f"{count_per_model}"
+    )
+    print(
+        "Background/model : "
+        f"{background_limit}/"
+        f"{count_per_model}"
+    )
+    print("-" * 72)
 
     for device in population:
         is_target = (
@@ -990,26 +1316,29 @@ def run_device_model_test(
             == target_model
         )
 
-        # 90% of DemoPhone X1 fails.
         if (
             is_target
-            and device["model_index"] < 9
+            and device["model_index"]
+            < target_limit
         ):
             sample = (
                 device_model_fault_sample()
             )
-            state = "AFFECTED"
 
-        # Small background failure in
-        # non-target control cohorts.
+            state = "TARGET_AFFECTED"
+
         elif (
             not is_target
-            and device["model_index"] == 0
+            and device["model_index"]
+            < background_limit
         ):
             sample = (
-                network_degraded_sample()
+                device_model_fault_sample()
             )
-            state = "BACKGROUND_AFFECTED"
+
+            state = (
+                "BACKGROUND_AFFECTED"
+            )
 
         else:
             sample = healthy_sample()
@@ -1036,41 +1365,92 @@ def run_device_model_test(
 
 def run_coverage_test(
     population: list[dict],
+    profile: dict,
+    count_per_model: int,
+    geo_anchor_name: str,
+    coverage_subtype: str,
 ):
     print()
     print("POPULATION COVERAGE TEST")
     print("-" * 72)
 
-    # Around 80% of every model cohort
+    affected_index = 0
+
+    # Affected share of every model cohort
     # experiences the same coverage /
-    # propagation degradation.
+    # propagation degradation, controlled
+    # by the scenario profile.
     #
     # The remaining devices act as
     # healthy controls.
+    limit = affected_limit(
+        count_per_model=count_per_model,
+        affected_ratio=profile[
+            "affected_ratio"
+        ],
+    )
+
     for device in population:
         affected = (
-            device["model_index"] < 8
+            device["model_index"] < limit
         )
 
         if affected:
-            sample = (
-                coverage_degraded_sample()
+            sample = coverage_degraded_sample(
+                profile["name"],
+                coverage_subtype,
             )
+
+            if coverage_subtype == "terrain":
+                geo = get_coverage_geo_for_index(
+                    affected_index=affected_index,
+                    anchor_mode=geo_anchor_name,
+                )
+
+                affected_index += 1
+
+            else:
+                # Generic coverage is intentionally not
+                # pinned onto a known blocked terrain path.
+                geo = None
+
             state = "AFFECTED"
 
         else:
             sample = healthy_sample()
+
+            # Healthy controls remain spatially
+            # varied instead of being forced onto
+            # the blocked candidate path.
+            geo = None
+
             state = "HEALTHY"
 
         send_telemetry(
             device["device_id"],
             sample,
+            geo=geo,
         )
+
+        if (
+            affected
+            and coverage_subtype == "terrain"
+        ):
+            location_label = (
+                f"GEO-{geo['name'].upper()}"
+            )
+
+        elif affected:
+            location_label = "GENERIC"
+
+        else:
+            location_label = "RANDOM"
 
         print(
             f"{device['device_id']} | "
             f"{device['model']:<16} | "
-            f"{state}"
+            f"{state:<8} | "
+            f"{location_label}"
         )
 
         time.sleep(0.03)
@@ -1083,25 +1463,43 @@ def run_coverage_test(
 
 def run_interference_test(
     population: list[dict],
+    profile: dict,
+    count_per_model: int,
 ):
     print()
     print(
         "POPULATION INTERFERENCE TEST"
     )
+    print("-" * 72)
 
-    print(
-        "-" * 72
+    limit = affected_limit(
+        count_per_model=count_per_model,
+        affected_ratio=profile[
+            "affected_ratio"
+        ],
     )
 
-    # 80% of every model cohort is affected.
+    print(
+        f"Profile          : "
+        f"{profile['name']}"
+    )
+    print(
+        f"Affected/model   : "
+        f"{limit}/{count_per_model}"
+    )
+    print("-" * 72)
+
     for device in population:
         affected = (
-            device["model_index"] < 8
+            device["model_index"]
+            < limit
         )
 
         if affected:
             sample = (
-                interference_degraded_sample()
+                interference_degraded_sample(
+                    profile
+                )
             )
 
             state = "AFFECTED"
@@ -1136,25 +1534,45 @@ def run_interference_test(
 
 def run_outage_test(
     population: list[dict],
+    profile: dict,
+    count_per_model: int,
 ):
     print()
     print(
         "POPULATION OUTAGE TEST"
     )
+    print("-" * 72)
 
-    print(
-        "-" * 72
+    limit = affected_limit(
+        count_per_model=count_per_model,
+        affected_ratio=profile[
+            "affected_ratio"
+        ],
     )
 
-    # 80% of every model cohort is affected.
+    print(
+        f"Profile          : "
+        f"{profile['name']}"
+    )
+
+    print(
+        f"Affected/model   : "
+        f"{limit}/{count_per_model}"
+    )
+
+    print("-" * 72)
+
     for device in population:
         affected = (
-            device["model_index"] < 8
+            device["model_index"]
+            < limit
         )
 
         if affected:
             sample = (
-                outage_degraded_sample()
+                outage_degraded_sample(
+                    profile
+                )
             )
 
             state = "AFFECTED"
@@ -1214,6 +1632,66 @@ def main():
     )
 
     parser.add_argument(
+        "--profile",
+        choices=[
+            "mild",
+            "moderate",
+            "severe",
+        ],
+        default="moderate",
+        help=(
+            "Controlled synthetic scenario "
+            "severity profile"
+        ),
+    )
+
+    parser.add_argument(
+        "--target-model",
+        choices=[
+            model["model"]
+            for model in MODELS
+        ],
+        default="DemoPhone X1",
+        help=(
+            "Target device model for "
+            "device-model scenario"
+        ),
+    )
+
+    parser.add_argument(
+        "--geo-anchor",
+        choices=[
+            "cycle",
+            "a",
+            "b",
+            "c",
+        ],
+        default="cycle",
+        help=(
+            "Coverage geo placement. "
+            "'cycle' rotates through "
+            "validated historical anchors."
+        ),
+    )
+
+    parser.add_argument(
+        "--coverage-subtype",
+        choices=[
+            "generic",
+            "terrain",
+        ],
+        default="generic",
+        help=(
+            "Coverage root-cause subtype. "
+            "'generic' represents RF coverage/"
+            "propagation degradation without "
+            "terrain obstruction. "
+            "'terrain' injects controlled "
+            "synthetic terrain evidence."
+        ),
+    )
+
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -1224,6 +1702,10 @@ def main():
     )
 
     args = parser.parse_args()
+
+    profile = get_scenario_profile(
+        args.profile
+    )
 
     # ------------------------------------------------------
     # Reproducibility
@@ -1268,6 +1750,25 @@ def main():
         f"Mode            : {args.mode}"
     )
 
+    print(f"Profile         : {args.profile}")
+
+    print(
+        "Affected ratio : "
+        f"{profile['affected_ratio']:.0%}"
+    )
+
+    if args.mode == "device-model":
+        print(
+            f"Target model     : "
+            f"{args.target_model}"
+        )
+
+    if args.mode == "coverage":
+        print(
+            f"Geo anchor      : "
+            f"{args.geo_anchor}"
+        )
+
     print(
         f"Device models   : {len(MODELS)}"
     )
@@ -1299,27 +1800,40 @@ def main():
 
     if args.mode == "network":
         run_network_test(
-            population
+            population,
+            profile,
+            args.count_per_model,
         )
 
     elif args.mode == "device-model":
         run_device_model_test(
-            population
+            population,
+            profile,
+            args.count_per_model,
+            args.target_model,
         )
 
     elif args.mode == "coverage":
         run_coverage_test(
-            population
+            population,
+            profile,
+            args.count_per_model,
+            args.geo_anchor,
+            args.coverage_subtype,
         )
 
     elif args.mode == "interference":
         run_interference_test(
-            population
+            population,
+            profile,
+            args.count_per_model,
         )
 
     elif args.mode == "outage":
         run_outage_test(
-            population
+            population,
+            profile,
+            args.count_per_model,
         )
 
     print()

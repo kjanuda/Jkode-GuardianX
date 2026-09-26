@@ -526,7 +526,7 @@ def build_population_evidence(population: dict) -> list[dict]:
 
         if (
             model_pattern == "DEVICE_MODEL_SPECIFIC_PATTERN"
-            and cohort_ratio >= 0.70
+            and cohort_ratio >= 0.50
         ):
             cohort_supports.append("DEVICE_MODEL_OR_FIRMWARE")
 

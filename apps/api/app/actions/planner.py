@@ -1,0 +1,789 @@
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.actions.catalog import (
+    ACTION_CATALOG_VERSION,
+    get_action_template,
+)
+from app.models.action import ActionPlan
+from app.models.rca import (
+    RCACase,
+    RCAPrediction,
+)
+
+
+PLANNER_VERSION = "ACTION_PLANNER_V1"
+SCHEMA_VERSION = "ACTION_PLAN_V1"
+
+STRUCTURED_ENGINE = "STRUCTURED_RCA_V1"
+CONSENSUS_ENGINE = "RCA_CONSENSUS_V1"
+
+
+class ActionPlannerError(ValueError):
+    pass
+
+
+def get_latest_prediction(
+    *,
+    db: Session,
+    case_id: int,
+    engine_type: str,
+) -> RCAPrediction | None:
+    return db.scalar(
+        select(
+            RCAPrediction
+        )
+        .where(
+            RCAPrediction.case_id == case_id,
+            RCAPrediction.engine_type == engine_type,
+        )
+        .order_by(
+            RCAPrediction.created_at.desc(),
+            RCAPrediction.id.desc(),
+        )
+        .limit(1)
+    )
+
+
+def get_verified_structured_rca(
+    *,
+    db: Session,
+    case_id: int,
+) -> dict[str, Any]:
+    prediction = get_latest_prediction(
+        db=db,
+        case_id=case_id,
+        engine_type=STRUCTURED_ENGINE,
+    )
+
+    if prediction is None:
+        raise ActionPlannerError(
+            "Structured RCA prediction not found"
+        )
+
+    output = (
+        prediction.output_json
+        or {}
+    )
+
+    verified = (
+        prediction.verifier_status == "VERIFIED"
+        and output.get("verified") is True
+    )
+
+    if not verified:
+        raise ActionPlannerError(
+            "Deterministic RCA is not VERIFIED"
+        )
+
+    primary_cause = (
+        output.get(
+            "primary_root_cause"
+        )
+        or prediction.primary_cause
+        or "UNKNOWN"
+    )
+
+    confidence = output.get(
+        "confidence"
+    )
+
+    if confidence is None:
+        confidence = (
+            prediction.confidence
+        )
+
+    return {
+        "prediction":
+            prediction,
+
+        "output":
+            output,
+
+        "primary_cause":
+            primary_cause,
+
+        "confidence":
+            (
+                float(confidence)
+                if confidence is not None
+                else None
+            ),
+
+        "domain":
+            output.get(
+                "domain"
+            ),
+    }
+
+
+def get_consensus_gate(
+    *,
+    db: Session,
+    case_id: int,
+    structured_prediction_id: int,
+) -> dict[str, Any]:
+    prediction = get_latest_prediction(
+        db=db,
+        case_id=case_id,
+        engine_type=CONSENSUS_ENGINE,
+    )
+
+    if prediction is None:
+        return {
+            "prediction":
+                None,
+
+            "consensus_status":
+                "MISSING",
+
+            "action_gate":
+                "BLOCKED",
+
+            "policy_review_eligible":
+                False,
+
+            "consensus_structured_prediction_id":
+                None,
+
+            "consensus_matches_current_structured":
+                False,
+
+            "reasons": [
+                "CONSENSUS_NOT_AVAILABLE",
+            ],
+        }
+
+    output = (
+        prediction.output_json
+        or {}
+    )
+
+    consensus_status = (
+        output.get(
+            "consensus_status"
+        )
+        or prediction.verifier_status
+        or "UNKNOWN"
+    )
+
+    action_gate = (
+        output.get(
+            "action_gate"
+        )
+        or "BLOCKED"
+    )
+
+    reasons = list(
+        output.get(
+            "reasons"
+        )
+        or []
+    )
+
+    consensus_deterministic = (
+        output.get(
+            "deterministic"
+        )
+        or {}
+    )
+
+    consensus_structured_prediction_id = (
+        consensus_deterministic.get(
+            "prediction_id"
+        )
+    )
+
+    consensus_matches_current_structured = (
+        consensus_structured_prediction_id
+        == structured_prediction_id
+    )
+
+    if not consensus_matches_current_structured:
+        reasons.append(
+            "CONSENSUS_STALE_FOR_CURRENT_STRUCTURED_RCA"
+        )
+
+    persisted_agreement = (
+        prediction.verifier_status
+        == "AGREEMENT"
+    )
+
+    if (
+        consensus_status == "AGREEMENT"
+        and not persisted_agreement
+    ):
+        reasons.append(
+            "CONSENSUS_PERSISTED_STATUS_MISMATCH"
+        )
+
+    reasons = list(
+        dict.fromkeys(
+            reasons
+        )
+    )
+
+    policy_review_eligible = (
+        consensus_matches_current_structured
+        and persisted_agreement
+        and consensus_status == "AGREEMENT"
+        and action_gate
+        == "ELIGIBLE_FOR_POLICY_REVIEW"
+    )
+
+    return {
+        "prediction":
+            prediction,
+
+        "consensus_status":
+            consensus_status,
+
+        "action_gate":
+            action_gate,
+
+        "policy_review_eligible":
+            policy_review_eligible,
+
+        "consensus_structured_prediction_id":
+            consensus_structured_prediction_id,
+
+        "consensus_matches_current_structured":
+            consensus_matches_current_structured,
+
+        "reasons":
+            reasons,
+    }
+
+def find_existing_plan(
+    *,
+    db: Session,
+    case_id: int,
+    primary_cause: str,
+) -> ActionPlan | None:
+    return db.scalar(
+        select(
+            ActionPlan
+        )
+        .where(
+            ActionPlan.rca_case_id
+            == case_id,
+
+            ActionPlan.planner_version
+            == PLANNER_VERSION,
+
+            ActionPlan.source_primary_cause
+            == primary_cause,
+        )
+        .order_by(
+            ActionPlan.created_at.desc(),
+            ActionPlan.id.desc(),
+        )
+        .limit(1)
+    )
+
+
+def action_plan_to_dict(
+    plan: ActionPlan,
+    *,
+    created: bool,
+) -> dict[str, Any]:
+    return {
+        "created":
+            created,
+
+        "id":
+            plan.id,
+
+        "action_uuid":
+            plan.action_uuid,
+
+        "rca_case_id":
+            plan.rca_case_id,
+
+        "alert_id":
+            plan.alert_id,
+
+        "device_id":
+            plan.device_id,
+
+        "source_primary_cause":
+            plan.source_primary_cause,
+
+        "source_confidence":
+            plan.source_confidence,
+
+        "source_verifier_status":
+            plan.source_verifier_status,
+
+        "action_code":
+            plan.action_code,
+
+        "action_type":
+            plan.action_type,
+
+        "target_type":
+            plan.target_type,
+
+        "target_ref":
+            plan.target_ref,
+
+        "title":
+            plan.title,
+
+        "status":
+            plan.status,
+
+        "execution_mode":
+            plan.execution_mode,
+
+        "safety_gate_status":
+            plan.safety_gate_status,
+
+        "requires_human_approval":
+            plan.requires_human_approval,
+
+        "auto_eligible":
+            plan.auto_eligible,
+
+        "risk_level":
+            plan.risk_level,
+
+        "blast_radius":
+            plan.blast_radius,
+
+        "parameters_json":
+            plan.parameters_json,
+
+        "safety_checks_json":
+            plan.safety_checks_json,
+    }
+
+
+def build_action_plan(
+    *,
+    db: Session,
+    case_id: int,
+) -> dict[str, Any]:
+    case = db.get(
+        RCACase,
+        case_id,
+    )
+
+    if case is None:
+        raise ActionPlannerError(
+            "RCA case not found"
+        )
+
+    # -------------------------------------------------
+    # Deterministic authority
+    # -------------------------------------------------
+
+    structured = (
+        get_verified_structured_rca(
+            db=db,
+            case_id=case_id,
+        )
+    )
+
+    structured_prediction = (
+        structured[
+            "prediction"
+        ]
+    )
+
+    primary_cause = (
+        structured[
+            "primary_cause"
+        ]
+    )
+
+    template = (
+        get_action_template(
+            primary_cause
+        )
+    )
+
+    # -------------------------------------------------
+    # Consensus policy-review gate
+    # -------------------------------------------------
+
+    consensus = (
+        get_consensus_gate(
+            db=db,
+            case_id=case_id,
+            structured_prediction_id=
+                structured_prediction.id,
+        )
+    )
+
+    consensus_prediction = (
+        consensus[
+            "prediction"
+        ]
+    )
+
+    policy_review_eligible = (
+        consensus[
+            "policy_review_eligible"
+        ]
+    )
+
+    safety_gate_status = (
+        "ELIGIBLE_FOR_POLICY_REVIEW"
+        if policy_review_eligible
+        else "BLOCKED"
+    )
+
+    # -------------------------------------------------
+    # Important safety policy
+    #
+    # V1 never marks an action auto-executable.
+    # Consensus only allows policy review.
+    # -------------------------------------------------
+
+    requires_human_approval = True
+    auto_eligible = False
+    execution_mode = "ADVISORY"
+
+    parameters_json = {
+        "catalog_version":
+            ACTION_CATALOG_VERSION,
+
+        "structured_prediction_id":
+            structured_prediction.id,
+
+        "consensus_prediction_id":
+            (
+                consensus_prediction.id
+                if consensus_prediction
+                is not None
+                else None
+            ),
+
+        "source_domain":
+            structured[
+                "domain"
+            ],
+
+        "consensus_status":
+            consensus[
+                "consensus_status"
+            ],
+
+        "consensus_action_gate":
+            consensus[
+                "action_gate"
+            ],
+
+        "consensus_reasons":
+            consensus[
+                "reasons"
+            ],
+
+        "planner_mode":
+            "ADVISORY_ONLY",
+    }
+
+    safety_checks_json = {
+        **(
+            template.get(
+                "safety_checks"
+            )
+            or {}
+        ),
+
+        "deterministic_rca_verified":
+            True,
+
+        "consensus_required":
+            True,
+
+        "consensus_policy_review_eligible":
+            policy_review_eligible,
+
+        "execution_allowed":
+            False,
+
+        "auto_execution_allowed":
+            False,
+
+        "human_approval_required":
+            True,
+    }
+
+    # -------------------------------------------------
+    # Idempotency
+    #
+    # Re-running planner for the same case + cause
+    # updates the existing V1 plan instead of creating
+    # duplicates.
+    # -------------------------------------------------
+
+    plan = find_existing_plan(
+        db=db,
+        case_id=case_id,
+        primary_cause=primary_cause,
+    )
+
+    created = (
+        plan is None
+    )
+
+    if plan is None:
+        plan = ActionPlan(
+            rca_case_id=
+                case.id,
+
+            alert_id=
+                case.alert_id,
+
+            device_id=
+                case.device_id,
+
+            source_primary_cause=
+                primary_cause,
+
+            source_confidence=
+                structured[
+                    "confidence"
+                ],
+
+            source_verifier_status=
+                structured_prediction.verifier_status,
+
+            action_code=
+                template[
+                    "action_code"
+                ],
+
+            action_type=
+                template[
+                    "action_type"
+                ],
+
+            target_type=
+                (
+                    case.scope_type
+                    or "DEVICE"
+                ),
+
+            target_ref=
+                case.scope_ref,
+
+            title=
+                template[
+                    "title"
+                ],
+
+            description=
+                template[
+                    "description"
+                ],
+
+            rationale=
+                template[
+                    "rationale"
+                ],
+
+            status=
+                "PROPOSED",
+
+            execution_mode=
+                execution_mode,
+
+            safety_gate_status=
+                safety_gate_status,
+
+            requires_human_approval=
+                requires_human_approval,
+
+            auto_eligible=
+                auto_eligible,
+
+            risk_level=
+                template[
+                    "risk_level"
+                ],
+
+            blast_radius=
+                template[
+                    "blast_radius"
+                ],
+
+            verification_required=
+                True,
+
+            rollback_required=
+                True,
+
+            parameters_json=
+                parameters_json,
+
+            preconditions_json=
+                template.get(
+                    "preconditions"
+                )
+                or [],
+
+            safety_checks_json=
+                safety_checks_json,
+
+            verification_plan_json=
+                template.get(
+                    "verification_plan"
+                )
+                or [],
+
+            rollback_plan_json=
+                template.get(
+                    "rollback_plan"
+                )
+                or [],
+
+            planner_version=
+                PLANNER_VERSION,
+
+            schema_version=
+                SCHEMA_VERSION,
+        )
+
+        db.add(
+            plan
+        )
+
+    else:
+        plan.alert_id = (
+            case.alert_id
+        )
+
+        plan.device_id = (
+            case.device_id
+        )
+
+        plan.source_confidence = (
+            structured[
+                "confidence"
+            ]
+        )
+
+        plan.source_verifier_status = (
+            structured_prediction.verifier_status
+        )
+
+        plan.action_code = (
+            template[
+                "action_code"
+            ]
+        )
+
+        plan.action_type = (
+            template[
+                "action_type"
+            ]
+        )
+
+        plan.target_type = (
+            case.scope_type
+            or "DEVICE"
+        )
+
+        plan.target_ref = (
+            case.scope_ref
+        )
+
+        plan.title = (
+            template[
+                "title"
+            ]
+        )
+
+        plan.description = (
+            template[
+                "description"
+            ]
+        )
+
+        plan.rationale = (
+            template[
+                "rationale"
+            ]
+        )
+
+        plan.execution_mode = (
+            execution_mode
+        )
+
+        plan.safety_gate_status = (
+            safety_gate_status
+        )
+
+        plan.requires_human_approval = (
+            requires_human_approval
+        )
+
+        plan.auto_eligible = (
+            auto_eligible
+        )
+
+        plan.risk_level = (
+            template[
+                "risk_level"
+            ]
+        )
+
+        plan.blast_radius = (
+            template[
+                "blast_radius"
+            ]
+        )
+
+        plan.verification_required = True
+        plan.rollback_required = True
+
+        plan.parameters_json = (
+            parameters_json
+        )
+
+        plan.preconditions_json = (
+            template.get(
+                "preconditions"
+            )
+            or []
+        )
+
+        plan.safety_checks_json = (
+            safety_checks_json
+        )
+
+        plan.verification_plan_json = (
+            template.get(
+                "verification_plan"
+            )
+            or []
+        )
+
+        plan.rollback_plan_json = (
+            template.get(
+                "rollback_plan"
+            )
+            or []
+        )
+
+    try:
+        db.commit()
+        db.refresh(
+            plan
+        )
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return action_plan_to_dict(
+        plan,
+        created=created,
+    )

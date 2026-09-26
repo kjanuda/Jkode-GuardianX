@@ -1,8 +1,14 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.agent import (
+    router as agent_router,
+)
 from app.api.alerts import (
     router as alerts_router,
+)
+from app.api.actions import (
+    router as actions_router,
 )
 from app.api.dashboard import (
     router as dashboard_router,
@@ -30,6 +36,8 @@ from app.db.health import (
     check_database_connection,
 )
 
+
+from app.api.feedback import router as feedback_router
 
 app = FastAPI(
     title="Guardian X API",
@@ -91,6 +99,14 @@ app.include_router(
 )
 
 
+app.include_router(
+    actions_router
+)
+
+app.include_router(
+    agent_router
+)
+
 # =====================================================
 # ROOT
 # =====================================================
@@ -141,3 +157,5 @@ async def database_health_check():
                 "error": str(exc),
             },
         )
+
+app.include_router(feedback_router)

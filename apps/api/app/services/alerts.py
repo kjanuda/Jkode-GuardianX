@@ -1,5 +1,4 @@
-
-from datetime import (
+﻿from datetime import (
     datetime,
     timezone,
 )
@@ -10,6 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.alert import Alert
+
+from app.services.alert_lifecycle import (
+    ACTIVE_ALERT_STATUSES,
+    OPEN,
+    REOPENED,
+    RESOLVED,
+    transition_alert,
+)
 
 
 def get_primary_cause(
@@ -79,7 +86,39 @@ def build_summary(
     )
 
 
-def resolve_open_alerts(
+def update_alert_from_risk(
+    alert: Alert,
+    risk: dict,
+    primary_cause: str,
+    now: datetime,
+) -> None:
+    alert.last_seen_at = now
+
+    alert.occurrence_count += 1
+
+    alert.severity = risk[
+        "risk_level"
+    ]
+
+    alert.risk_score = risk[
+        "risk_score"
+    ]
+
+    alert.primary_cause = (
+        primary_cause
+    )
+
+    alert.title = build_title(
+        risk,
+        primary_cause,
+    )
+
+    alert.summary = build_summary(
+        risk
+    )
+
+
+def resolve_active_alerts(
     db: Session,
     device_id: int,
 ) -> int:
@@ -89,14 +128,24 @@ def resolve_open_alerts(
 
     alerts = db.scalars(
         select(Alert).where(
-            Alert.device_id == device_id,
-            Alert.status == "OPEN",
+            Alert.device_id
+            == device_id,
+
+            Alert.status.in_(
+                ACTIVE_ALERT_STATUSES
+            ),
         )
     ).all()
 
     for alert in alerts:
-        alert.status = "RESOLVED"
-        alert.resolved_at = now
+        transition_alert(
+            alert,
+            RESOLVED,
+            now=now,
+        )
+
+        # Preserve previous Guardian X
+        # alert ordering behaviour.
         alert.last_seen_at = now
 
     if alerts:
@@ -105,7 +154,7 @@ def resolve_open_alerts(
     return len(alerts)
 
 
-def resolve_other_open_alerts(
+def resolve_other_active_alerts(
     db: Session,
     device_id: int,
     keep_fingerprint: str,
@@ -116,15 +165,25 @@ def resolve_other_open_alerts(
 
     alerts = db.scalars(
         select(Alert).where(
-            Alert.device_id == device_id,
-            Alert.status == "OPEN",
-            Alert.fingerprint != keep_fingerprint,
+            Alert.device_id
+            == device_id,
+
+            Alert.status.in_(
+                ACTIVE_ALERT_STATUSES
+            ),
+
+            Alert.fingerprint
+            != keep_fingerprint,
         )
     ).all()
 
     for alert in alerts:
-        alert.status = "RESOLVED"
-        alert.resolved_at = now
+        transition_alert(
+            alert,
+            RESOLVED,
+            now=now,
+        )
+
         alert.last_seen_at = now
 
     if alerts:
@@ -133,20 +192,70 @@ def resolve_other_open_alerts(
     return len(alerts)
 
 
+def get_active_matching_alert(
+    db: Session,
+    device_id: int,
+    fingerprint: str,
+) -> Alert | None:
+    return db.scalar(
+        select(Alert)
+        .where(
+            Alert.device_id
+            == device_id,
+
+            Alert.fingerprint
+            == fingerprint,
+
+            Alert.status.in_(
+                ACTIVE_ALERT_STATUSES
+            ),
+        )
+        .order_by(
+            Alert.last_seen_at.desc()
+        )
+        .limit(1)
+    )
+
+
+def get_resolved_matching_alert(
+    db: Session,
+    device_id: int,
+    fingerprint: str,
+) -> Alert | None:
+    return db.scalar(
+        select(Alert)
+        .where(
+            Alert.device_id
+            == device_id,
+
+            Alert.fingerprint
+            == fingerprint,
+
+            Alert.status
+            == RESOLVED,
+        )
+        .order_by(
+            Alert.last_seen_at.desc()
+        )
+        .limit(1)
+    )
+
+
 def evaluate_alert(
     db: Session,
     device_id: int,
     risk: dict,
 ) -> dict:
-    # -----------------------------------------
-    # Healthy enough → resolve all open alerts
-    # -----------------------------------------
+    # =====================================================
+    # HEALTHY / RECOVERED
+    # Resolve every active lifecycle state.
+    # =====================================================
 
     if not risk[
         "alert_required"
     ]:
         resolved_count = (
-            resolve_open_alerts(
+            resolve_active_alerts(
                 db=db,
                 device_id=device_id,
             )
@@ -189,16 +298,13 @@ def evaluate_alert(
         )
     )
 
-    # -----------------------------------------
-    # Resolve stale OPEN incidents
-    #
-    # Keep only the current fingerprint OPEN.
-    # Any other OPEN incident for this device
-    # is considered stale.
-    # -----------------------------------------
+    # =====================================================
+    # Resolve a different active incident on this device.
+    # Keep only the current fingerprint active.
+    # =====================================================
 
     resolved_old_incidents = (
-        resolve_other_open_alerts(
+        resolve_other_active_alerts(
             db=db,
             device_id=device_id,
             keep_fingerprint=fingerprint,
@@ -209,59 +315,36 @@ def evaluate_alert(
         timezone.utc
     )
 
-    # -----------------------------------------
-    # Dedup:
-    # same device + same primary cause +
-    # existing OPEN alert → update it
-    # -----------------------------------------
+    # =====================================================
+    # SAME ACTIVE INCIDENT
+    #
+    # OPEN / ACKNOWLEDGED / MITIGATING / REOPENED
+    # stays in its current workflow state.
+    #
+    # Repeated telemetry must NOT reset an operator's
+    # ACKNOWLEDGED or MITIGATING state back to OPEN.
+    # =====================================================
 
-    existing = db.scalar(
-        select(Alert)
-        .where(
-            Alert.device_id == device_id,
-            Alert.fingerprint == fingerprint,
-            Alert.status == "OPEN",
+    existing_active = (
+        get_active_matching_alert(
+            db=db,
+            device_id=device_id,
+            fingerprint=fingerprint,
         )
-        .order_by(
-            Alert.last_seen_at.desc()
-        )
-        .limit(1)
     )
 
-    if existing is not None:
-        existing.last_seen_at = now
-
-        existing.occurrence_count += 1
-
-        existing.severity = (
-            risk[
-                "risk_level"
-            ]
-        )
-
-        existing.risk_score = (
-            risk[
-                "risk_score"
-            ]
-        )
-
-        existing.title = (
-            build_title(
-                risk,
-                primary_cause,
-            )
-        )
-
-        existing.summary = (
-            build_summary(
-                risk
-            )
+    if existing_active is not None:
+        update_alert_from_risk(
+            alert=existing_active,
+            risk=risk,
+            primary_cause=primary_cause,
+            now=now,
         )
 
         db.commit()
 
         db.refresh(
-            existing
+            existing_active
         )
 
         return {
@@ -282,19 +365,77 @@ def evaluate_alert(
                 resolved_old_incidents,
 
             "alert":
-                existing,
+                existing_active,
         }
 
-    # -----------------------------------------
-    # New incident
-    # -----------------------------------------
+    # =====================================================
+    # REOPEN
+    #
+    # Same device + same fingerprint was previously
+    # resolved and the fault has returned.
+    #
+    # Reuse the incident rather than creating a duplicate.
+    # =====================================================
+
+    resolved_existing = (
+        get_resolved_matching_alert(
+            db=db,
+            device_id=device_id,
+            fingerprint=fingerprint,
+        )
+    )
+
+    if resolved_existing is not None:
+        transition_alert(
+            resolved_existing,
+            REOPENED,
+            now=now,
+        )
+
+        update_alert_from_risk(
+            alert=resolved_existing,
+            risk=risk,
+            primary_cause=primary_cause,
+            now=now,
+        )
+
+        db.commit()
+
+        db.refresh(
+            resolved_existing
+        )
+
+        return {
+            "action":
+                "REOPENED",
+
+            "risk_score":
+                risk[
+                    "risk_score"
+                ],
+
+            "risk_level":
+                risk[
+                    "risk_level"
+                ],
+
+            "resolved_count":
+                resolved_old_incidents,
+
+            "alert":
+                resolved_existing,
+        }
+
+    # =====================================================
+    # BRAND NEW INCIDENT
+    # =====================================================
 
     alert = Alert(
         device_id=device_id,
 
         fingerprint=fingerprint,
 
-        status="OPEN",
+        status=OPEN,
 
         severity=risk[
             "risk_level"
@@ -319,8 +460,12 @@ def evaluate_alert(
 
         occurrence_count=1,
 
+        reopened_count=0,
+
         first_seen_at=now,
         last_seen_at=now,
+
+        status_updated_at=now,
     )
 
     db.add(

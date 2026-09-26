@@ -88,6 +88,48 @@ class Alert(Base):
             ),
     )
 
+    acknowledged_at: Mapped[
+        datetime | None
+    ] = mapped_column(
+        DateTime(
+            timezone=True
+        ),
+        nullable=True,
+    )
+
+    mitigation_started_at: Mapped[
+        datetime | None
+    ] = mapped_column(
+        DateTime(
+            timezone=True
+        ),
+        nullable=True,
+    )
+
+    reopened_at: Mapped[
+        datetime | None
+    ] = mapped_column(
+        DateTime(
+            timezone=True
+        ),
+        nullable=True,
+    )
+
+    reopened_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
+
+    status_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(
+            timezone=True
+        ),
+        default=lambda:
+            datetime.now(
+                timezone.utc
+            ),
+    )
+
     resolved_at: Mapped[
         datetime | None
     ] = mapped_column(

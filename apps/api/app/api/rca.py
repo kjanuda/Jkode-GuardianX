@@ -69,6 +69,11 @@ from app.rca.consensus import (
     run_case_consensus,
 )
 
+from app.ml.rca_client import (
+    MLRCAServiceError,
+    run_case_ml_prediction,
+)
+
 from app.schemas.rca import (
     EvidenceFusionResult,
     HierarchicalRCAResult,
@@ -77,6 +82,7 @@ from app.schemas.rca import (
     RCASnapshotResult,
     RCAProposal,
     StructuredRCAResult,
+    MLRCAResult,
 )
 
 
@@ -620,6 +626,55 @@ def build_case_structured_rca(
         raise HTTPException(
             status_code=status_code,
             detail=message,
+        ) from exc
+
+
+
+# ==========================================================
+# ML RCA Prediction
+# ==========================================================
+
+
+@router.post(
+    "/cases/{case_id}/ml",
+    response_model=MLRCAResult,
+)
+def run_rca_case_ml_prediction(
+    case_id: int,
+
+    db: Session = Depends(
+        get_db
+    ),
+):
+    try:
+        return run_case_ml_prediction(
+            db=db,
+            case_id=case_id,
+        )
+
+    except ValueError as exc:
+        message = str(
+            exc
+        )
+
+        status_code = (
+            404
+            if message
+            == "RCA case not found"
+            else 400
+        )
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=message,
+        ) from exc
+
+    except MLRCAServiceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(
+                exc
+            ),
         ) from exc
 
 

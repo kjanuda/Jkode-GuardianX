@@ -1,4 +1,3 @@
-
 from datetime import datetime
 
 
@@ -321,3 +320,41 @@ class RCAProposal(
 
     reasoning_summary: str | None = None
 
+
+# ==========================================================
+# ML RCA
+# ==========================================================
+
+
+class MLRCAProbability(
+    BaseModel
+):
+    cause: str
+
+    probability: float
+
+
+class MLRCAResult(
+    BaseModel
+):
+    prediction_id: int
+
+    case_id: int
+
+    engine_type: str
+
+    predicted_cause: str
+
+    confidence: float
+
+    probabilities: list[
+        MLRCAProbability
+    ]
+
+    model_schema: str
+
+    dataset_sha256: str | None = None
+
+    manifest_sha256: str | None = None
+
+    advisory_only: bool
